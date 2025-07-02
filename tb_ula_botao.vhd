@@ -2,121 +2,202 @@ library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
-entity tb_ula_botao is
-end tb_ula_botao;
+entity ula_botao is
+    port (
+        clk       : in  std_logic;
+        reset_btn : in  std_logic;
+        a_btn     : in  std_logic;
+        b_btn     : in  std_logic;
+        ss_btn    : in  std_logic;
 
-architecture sim of tb_ula_botao is
+        s0_led    : out std_logic;
+        s1_led    : out std_logic;
+        over_led  : out std_logic;
+        c_out_led : out std_logic;
 
-    signal clk        : std_logic := '0';
-    signal reset_btn  : std_logic := '1';
-    signal inc_a_btn  : std_logic := '1';
-    signal inc_b_btn  : std_logic := '1';
-    signal inc_ss_btn : std_logic := '1';
+        display   : out std_logic_vector(6 downto 0);
+        an        : out std_logic_vector(5 downto 0)
+    );
+end ula_botao;
 
-    signal f_display  : std_logic_vector(6 downto 0);
-    signal f_bin_out  : std_logic_vector(3 downto 0);
-    signal over_led   : std_logic;
-    signal c_out_led  : std_logic;
-    signal s1_led     : std_logic;
-    signal s0_led     : std_logic;
+architecture Behavioral of ula_botao is
 
-    signal ss_val     : std_logic_vector(1 downto 0);
-    signal a_val      : std_logic_vector(3 downto 0);
-    signal b_val      : std_logic_vector(3 downto 0);
+    -- Sinais
+    signal a_reg, b_reg : signed(3 downto 0) := (others => '0');
+    signal ss           : unsigned(1 downto 0) := (others => '0');
+    signal f            : signed(3 downto 0);
+    signal over, c_out  : std_logic;
 
-    constant clk_period : time := 10 ns;
+    -- Botões anteriores (para detecção de borda)
+    signal a_btn_last, b_btn_last, ss_btn_last, reset_btn_last : std_logic := '1';
 
-    function to_bin_str(vec : std_logic_vector) return string is
-        variable result : string(1 to vec'length);
+    -- Multiplexador
+    signal clk_div    : unsigned(15 downto 0) := (others => '0');
+    signal mux_count  : unsigned(2 downto 0) := (others => '0');
+    signal current_val : signed(3 downto 0);
+    signal current_sign : std_logic;
+    signal current_mag  : std_logic_vector(3 downto 0);
+
+    -- Display
+    signal digit : std_logic_vector(6 downto 0);
+
+    -- Função para gerar magnitude e sinal
+    function split_signed(x : signed(3 downto 0)) return std_logic_vector is
+        variable mag : unsigned(3 downto 0);
     begin
-        for i in vec'range loop
-            result(i + 1 - vec'low) := character'value(std_ulogic'image(vec(i)));
-        end loop;
-        return result;
-    end;
+        if x < 0 then
+            mag := unsigned(-x);
+        else
+            mag := unsigned(x);
+        end if;
+        return std_logic_vector(mag);
+    end function;
+
+    -- Decodificador de 7 segmentos
+    function seven_seg_decoder(bcd : std_logic_vector(3 downto 0)) return std_logic_vector is
+        variable seg : std_logic_vector(6 downto 0);
+    begin
+        case bcd is
+            when "0000" => seg := "1000000"; -- 0
+            when "0001" => seg := "1111001"; -- 1
+            when "0010" => seg := "0100100"; -- 2
+            when "0011" => seg := "0110000"; -- 3
+            when "0100" => seg := "0011001"; -- 4
+            when "0101" => seg := "0010010"; -- 5
+            when "0110" => seg := "0000010"; -- 6
+            when "0111" => seg := "1111000"; -- 7
+            when others => seg := "1111111"; -- off
+        end case;
+        return seg;
+    end function;
 
 begin
 
-    dut: entity work.ula_botao
-        port map (
-            clk         => clk,
-            reset_btn   => reset_btn,
-            a_btn       => inc_a_btn,
-            b_btn       => inc_b_btn,
-            ss_btn      => inc_ss_btn,
-            f_display   => f_display,
-            over_led    => over_led,
-            c_out_led   => c_out_led,
-            s1_led      => s1_led,
-            s0_led      => s0_led,
-            f_bin_out   => f_bin_out
-        );
-
-    ss_val <= s1_led & s0_led;
-
+    -- Clock divisor
     process(clk)
     begin
         if rising_edge(clk) then
-            if reset_btn = '0' then
-                a_val <= (others => '0');
-                b_val <= (others => '0');
-            else
-                if inc_a_btn = '0' then
-                    a_val <= std_logic_vector(unsigned(a_val) + 1);
-                end if;
-                if inc_b_btn = '0' then
-                    b_val <= std_logic_vector(unsigned(b_val) + 1);
-                end if;
-            end if;
+            clk_div <= clk_div + 1;
         end if;
     end process;
 
-    clk_process : process
+    -- Lógica dos botões
+    process(clk)
     begin
-        clk <= '0'; wait for clk_period / 2;
-        clk <= '1'; wait for clk_period / 2;
+        if rising_edge(clk) then
+            if reset_btn = '0' and reset_btn_last = '1' then
+                a_reg <= (others => '0');
+                b_reg <= (others => '0');
+                ss    <= (others => '0');
+            end if;
+
+            if a_btn = '0' and a_btn_last = '1' then
+                if a_reg < to_signed(7, 4) then
+                    a_reg <= a_reg + 1;
+                end if;
+            end if;
+
+            if b_btn = '0' and b_btn_last = '1' then
+                if b_reg < to_signed(7, 4) then
+                    b_reg <= b_reg + 1;
+                end if;
+            end if;
+
+            if ss_btn = '0' and ss_btn_last = '1' then
+                ss <= ss + 1;
+            end if;
+
+            a_btn_last     <= a_btn;
+            b_btn_last     <= b_btn;
+            ss_btn_last    <= ss_btn;
+            reset_btn_last <= reset_btn;
+        end if;
     end process;
 
-    stim_proc: process
-        variable dec_val : integer;
+    -- ULA
+    process(a_reg, b_reg, ss)
+        variable temp : signed(4 downto 0);
     begin
+        over  <= '0';
+        c_out <= '0';
 
-        for a_int in 0 to 15 loop
-            for b_int in 0 to 15 loop
+        case ss is
+            when "00" =>
+                temp := resize(a_reg, 5) + resize(b_reg, 5);
+                f    <= temp(3 downto 0);
+                c_out <= temp(4);
+                if (a_reg(3) = b_reg(3)) and (f(3) /= a_reg(3)) then
+                    over <= '1';
+                end if;
 
-                reset_btn <= '0'; wait for clk_period;
-                reset_btn <= '1'; wait for clk_period;
+            when "01" =>
+                temp := resize(a_reg, 5) - resize(b_reg, 5);
+                f    <= temp(3 downto 0);
+                c_out <= temp(4);
+                if (a_reg(3) /= b_reg(3)) and (f(3) /= a_reg(3)) then
+                    over <= '1';
+                end if;
 
-                for i in 1 to a_int loop
-                    inc_a_btn <= '0'; wait for clk_period; inc_a_btn <= '1'; wait for clk_period;
-                end loop;
-
-                for i in 1 to b_int loop
-                    inc_b_btn <= '0'; wait for clk_period; inc_b_btn <= '1'; wait for clk_period;
-                end loop;
-
-                -- SOMA
-                for i in 0 to 1 loop inc_ss_btn <= '1'; wait for clk_period; end loop;
-                wait for clk_period;
-                dec_val := to_integer(unsigned(f_bin_out));
-
-                -- SUB
-                inc_ss_btn <= '0'; wait for clk_period; inc_ss_btn <= '1'; wait for clk_period;
-                wait for clk_period;
-                dec_val := to_integer(unsigned(f_bin_out));
-
-                -- AND
-                inc_ss_btn <= '0'; wait for clk_period; inc_ss_btn <= '1'; wait for clk_period;
-                wait for clk_period;
-
-                -- OR
-                inc_ss_btn <= '0'; wait for clk_period; inc_ss_btn <= '1'; wait for clk_period;
-                wait for clk_period;
- 
-            end loop;
-        end loop;
-
-        wait;
+            when "10" =>
+                f    <= a_reg and b_reg;
+            when others =>
+                f    <= a_reg or b_reg;
+        end case;
     end process;
 
-end sim;
+    -- Multiplexador
+    process(clk)
+    begin
+        if rising_edge(clk) then
+            mux_count <= mux_count + 1;
+        end if;
+    end process;
+
+    process(mux_count, a_reg, b_reg, f)
+    begin
+        case mux_count is
+            when "000" => -- Sinal de A
+                current_sign <= a_reg(3);
+                current_mag  <= split_signed(a_reg);
+                an <= "111110"; -- ativar display 5 (mais significativo de A)
+            when "001" => -- Valor de A
+                current_sign <= '0';
+                current_mag  <= split_signed(a_reg);
+                an <= "111101"; -- display 4
+
+            when "010" => -- Sinal de B
+                current_sign <= b_reg(3);
+                current_mag  <= split_signed(b_reg);
+                an <= "111011"; -- display 3
+
+            when "011" => -- Valor de B
+                current_sign <= '0';
+                current_mag  <= split_signed(b_reg);
+                an <= "110111"; -- display 2
+
+            when "100" => -- Sinal de F
+                current_sign <= f(3);
+                current_mag  <= split_signed(f);
+                an <= "101111"; -- display 1
+
+            when others => -- Valor de F
+                current_sign <= '0';
+                current_mag  <= split_signed(f);
+                an <= "011111"; -- display 0
+        end case;
+
+        if current_sign = '1' then
+            digit <= "0111111"; -- sinal de menos
+        else
+            digit <= seven_seg_decoder(current_mag);
+        end if;
+    end process;
+
+    -- Saídas
+    display    <= not digit;       -- lógica invertida
+    s1_led     <= ss(1);
+    s0_led     <= ss(0);
+    over_led   <= over;
+    c_out_led  <= c_out;
+
+end Behavioral;
